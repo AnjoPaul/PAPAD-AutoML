@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+scikit-learn
+tpot
+flaml
+h2o
+joblib
+pandas
+matplotlib
+seaborn
+sentence-transformers
+torch
+openpyxl
+chardet
+imbalanced-learn
+scikit-learn-extra

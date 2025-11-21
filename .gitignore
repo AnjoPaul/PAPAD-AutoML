@@ -1,0 +1,8 @@
+backend/node_modules/
+electron-app/node_modules/
+.env
+backend/.env
+electron-app/.env
+build/
+dist/
+.DS_Store
