@@ -2,11 +2,14 @@ import { extractChains } from './branchExtractor';
 
 const DATASET_NODE_ID = "dataset-node";
 
-// --- Core Graph Utilities (from graphUtils.js) ---
+// --- Type Helpers (Handles variations in naming) ---
+const isModel = (type) => ['model', 'modelNode'].includes(type);
+const isOutput = (type) => ['output', 'outputNode'].includes(type);
+const isPreprocessing = (type) => 
+  ['normal', 'domain', 'preprocessing', 'preprocessingNode', 'normalpreprocessingNode'].includes(type);
 
-/**
- * Builds a Map for fast child lookup: Map { 'nodeA' => ['nodeB', 'nodeC'] }
- */
+// --- Core Graph Utilities ---
+
 export const buildAdjacency = (edgeList) => {
   const map = new Map();
   for (const e of edgeList) {
@@ -16,17 +19,9 @@ export const buildAdjacency = (edgeList) => {
   return map;
 };
 
-/**
- * Builds a Map for fast node lookup: Map { 'nodeA' => { ...nodeObject } }
- */
 export const mapNodes = (nodesList) =>
   new Map(nodesList.map((n) => [n.id, n]));
 
-// --- Validation Helpers (from validation.js) ---
-
-/**
- * Checks if a node is connected to the dataset (recursively)
- */
 export const isConnectedToDataset = (nodeId, edges) => {
   if (nodeId === DATASET_NODE_ID) return true;
   const incoming = edges.filter((e) => e.target === nodeId);
@@ -34,8 +29,30 @@ export const isConnectedToDataset = (nodeId, edges) => {
   return incoming.some((e) => isConnectedToDataset(e.source, edges));
 };
 
+// --- Recursive Checkers ---
+
 /**
- * Checks for duplicate modules in a single path
+ * Checks if a Model node exists anywhere upstream in the chain.
+ */
+function hasUpstreamModel(startNodeId, edges, nodeMap) {
+  // Build Reverse Adjacency (Child -> Parent)
+  const revMap = new Map();
+  for (const e of edges) revMap.set(e.target, e.source);
+
+  let curr = startNodeId;
+  while (curr) {
+    const node = nodeMap.get(curr);
+    // Use helper to check for 'model' or 'modelNode'
+    if (node && isModel(node.type)) return true;
+    
+    if (curr === DATASET_NODE_ID) return false;
+    curr = revMap.get(curr);
+  }
+  return false;
+}
+
+/**
+ * Checks for duplicate baseIds (e.g., two PCA nodes) in one path
  */
 export const hasDuplicateBaseIdInAnyPath = (nodes, edges) => {
   const adjacency = buildAdjacency(edges);
@@ -63,107 +80,75 @@ export const hasDuplicateBaseIdInAnyPath = (nodes, edges) => {
   return duplicateFound;
 };
 
-/**
- * Helper to build a "reverse" adjacency map for crawling upstream.
- * Map { 'nodeB' => 'nodeA' }
- */
-const buildReverseAdjacency = (edgeList) => {
-  const map = new Map();
-  for (const e of edgeList) {
-    map.set(e.target, e.source); // Assumes one parent per node
-  }
-  return map;
-};
-
-/**
- * Crawls UP the graph from a start node to see if a node of a specific type
- * (e.g., 'modelNode') exists anywhere in its history.
- */
-function hasUpstreamNodeOfType(startNodeId, edges, nodeMap, targetType) {
-  const revAdjacency = buildReverseAdjacency(edges);
-  let currentNodeId = startNodeId;
-
-  while (currentNodeId) {
-    const node = nodeMap.get(currentNodeId);
-    if (node && node.type === targetType) {
-      return true;
-    }
-    // Stop if we hit the dataset node
-    if (currentNodeId === DATASET_NODE_ID) {
-      return false;
-    }
-    // Move to the parent node
-    currentNodeId = revAdjacency.get(currentNodeId);
-  }
-  return false;
-}
-
-// --- Main Validator 1: Real-time Connection Rules ---
-
-/**
- * This is the new, powerful validator for the onConnect action.
- * It checks Rules 1 & 2 *before* a connection is made.
- */
+// ======================================================
+// VALIDATOR 1: Real-time Connection Rules (onConnect)
+// ======================================================
 export const validateConnection = (nodes, edges, connection) => {
   const nodeMap = mapNodes(nodes);
   const sourceNode = nodeMap.get(connection.source);
   const targetNode = nodeMap.get(connection.target);
 
   if (!sourceNode || !targetNode) return "Node not found.";
+
+  // --- RULE: PREVENT CONVERGENCE (Merging Branches) ---
+  // Check if the target node ALREADY has an incoming edge.
+  const targetAlreadyHasInput = edges.some(e => e.target === connection.target);
+  if (targetAlreadyHasInput) {
+      return "❌ Branches cannot merge! A node can only have one input.";
+  }
+
+  // Basic Validation
+  if (connection.target === DATASET_NODE_ID) return "❌ Cannot connect INTO the Dataset node.";
+  if (!isConnectedToDataset(connection.source, edges)) return "❌ Source must be connected to the Dataset first.";
+
+  // --- RULE: STRICT ORDERING (No Preprocessing AFTER Model) ---
+  if (isPreprocessing(targetNode.type)) {
+      // 1. Check immediate parent
+      if (isModel(sourceNode.type)) {
+          return "❌ Logic Error: Cannot place Preprocessing AFTER a Model.";
+      }
+      // 2. Check entire upstream history
+      if (hasUpstreamModel(connection.source, edges, nodeMap)) {
+          return "❌ Logic Error: This branch already has a Model upstream. Preprocessing must come BEFORE the model.";
+      }
+  }
+
+  // --- RULE: ONLY ONE MODEL PER BRANCH ---
+  if (isModel(targetNode.type)) {
+      // 1. Check immediate parent
+      if (isModel(sourceNode.type)) {
+          return "❌ Only one Model allowed per branch.";
+      }
+      // 2. Check entire upstream history
+      if (hasUpstreamModel(connection.source, edges, nodeMap)) {
+          return "❌ This branch already has a Model upstream. Only one model allowed.";
+      }
+  }
   
-  // Rule 0: Basic connection validation
-  if (connection.target === DATASET_NODE_ID)
-    return "❌ Cannot connect INTO the Dataset node.";
-
-  if (!isConnectedToDataset(connection.source, edges))
-    return "❌ Source must be connected to the Dataset first.";
-
-  // Rule 1: No preprocessing after a model.
-  // Check 1.a: Connecting *from* a model *to* preprocessing
-  if (sourceNode.type === 'modelNode' && targetNode.type === 'normalpreprocessingNode') {
-    return `Rule Error: Cannot connect a Model node ("${sourceNode.data.label}") to a Preprocessing node ("${targetNode.data.label}").`;
-  }
-  // Check 1.b: Connecting *to* a preprocessing node when a model is already upstream
-  if (targetNode.type === 'normalpreprocessingNode' && hasUpstreamNodeOfType(connection.source, edges, nodeMap, 'modelNode')) {
-    return `Rule Error: Cannot add Preprocessing node ("${targetNode.data.label}") after a Model node.`;
-  }
-
-  // Rule 2: Only one model per branch.
-  // Check 2.a: Connecting *from* a model *to* another model
-  if (sourceNode.type === 'modelNode' && targetNode.type === 'modelNode') {
-    return `Rule Error: Cannot connect a Model node to another Model node. Only one model per branch.`;
-  }
-  // Check 2.b: Connecting *to* a model when a model is already upstream
-  if (targetNode.type === 'modelNode' && hasUpstreamNodeOfType(connection.source, edges, nodeMap, 'modelNode')) {
-    return `Rule Error: Cannot add a second Model node ("${targetNode.data.label}") to this branch. Only one model per branch.`;
-  }
-  
-  // Rule 3 (Partial): Output must be the end.
-  // Check 3.a: Cannot connect *from* an output node
-  if (sourceNode.type === 'outputNode') {
+  // --- RULE: OUTPUT MUST BE END ---
+  if (isOutput(sourceNode.type)) {
       return `Rule Error: Output nodes ("${sourceNode.data.label}") must be the end of a pipeline.`;
   }
-  
-  // Check for simple duplicates (already in your old code)
+
+  // Check for duplicates
   const simulatedEdges = [...edges, { ...connection, id: `sim_${Date.now()}` }];
   if (hasDuplicateBaseIdInAnyPath(nodes, simulatedEdges)) {
     return "❌ Same module cannot appear twice in the same branch!";
   }
 
-  // All rules passed
-  return null;
+  return null; // Connection Allowed
 };
 
-// --- Main Validator 2: Final Pipeline "Run" Rules ---
+// ======================================================
+// VALIDATOR 2: Final Pipeline "Run" Rules
+// ======================================================
 
-/**
- * Rule 4: Checks for any nodes that aren't connected to the main graph.
- */
 function findStandaloneNodes(nodes, edges) {
   for (const node of nodes) {
     if (node.id === DATASET_NODE_ID) continue;
+    // Labels are visual only, skip them
+    if (node.type === 'branchLabel') continue; 
     
-    // Check if it's connected back to the dataset
     if (!isConnectedToDataset(node.id, edges)) {
        return `Error: Node "${node.data.label}" is not part of a chain from the Dataset node.`;
     }
@@ -171,44 +156,36 @@ function findStandaloneNodes(nodes, edges) {
   return null;
 }
 
-/**
- * Rule 3: Checks the logic of each branch for completeness.
- */
-function validateBranchLogic(chains) {
-  if (chains.length === 0) {
-    return "Error: No complete pipeline found. Connect your nodes from the Dataset to an Output.";
-  }
-
-  for (const chain of chains) {
-    const lastNode = chain[chain.length - 1];
-    if (lastNode.type !== 'outputNode') {
-      return `Error: Branch ending in "${lastNode.label}" must end with an Output node.`;
-    }
-    
-    const hasModel = chain.some(step => step.type === 'modelNode');
-    if (!hasModel) {
-      return `Error: Branch ending in "${lastNode.label}" does not contain a Model node.`;
-    }
-  }
-  
-  return null;
-}
-
-/**
- * Main validator function for the "Run Config" button.
- */
 export function validatePipeline(nodes, edges) {
-  
-  // Run Rule 4 (Standalone Nodes)
+  // 1. Check for floating nodes
   const standaloneError = findStandaloneNodes(nodes, edges);
   if (standaloneError) return standaloneError;
 
-  // Extract all branches
+  // 2. Extract Branches
+  // extractChains returns object: { "main": [...], "branch_1": [...] }
   const chains = extractChains(nodes, edges);
+  const branchNames = Object.keys(chains);
 
-  // Run Rule 3 (Branch Logic)
-  const branchError = validateBranchLogic(chains);
-  if (branchError) return branchError;
+  if (branchNames.length === 0) {
+    return "❌ No complete pipeline found. Connect your nodes from the Dataset to an Output.";
+  }
+
+  // 3. Validate Completeness for EVERY Branch
+  for (const name of branchNames) {
+      const path = chains[name];
+      const lastNode = path[path.length - 1];
+
+      // A. Must end in Output
+      if (!isOutput(lastNode.type)) {
+          return `❌ Incomplete Branch: "${name}" must end with an Output node.`;
+      }
+
+      // B. Must contain a Model
+      const hasModelNode = path.some(n => isModel(n.type));
+      if (!hasModelNode) {
+          return `❌ Missing Model: "${name}" does not contain a Machine Learning Model.`;
+      }
+  }
   
   return null;
 }

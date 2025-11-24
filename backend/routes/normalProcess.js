@@ -79,7 +79,7 @@ const generateGraphData = (pList, mList, oList) => {
     nodes.push({
       id: newNodeId,
       type: "outputNode",
-      position: { x: xPos, y: 100 },
+      position: { x: xPos, y: 85 },
       data: { label: module.label, baseId: id }
     });
     edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });

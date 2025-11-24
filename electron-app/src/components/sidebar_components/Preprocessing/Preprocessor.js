@@ -76,7 +76,7 @@ const Preprocessor = ({ file, detectedDomain, autoStart = false, setLoading }) =
   return (
     <div>
       {error && <ErrorPopup message={error} onClose={() => setError(null)} />}
-      <p style={{ marginBottom: 10, fontWeight: "bold" }}>Continue with:</p>
+      <p style={{ marginBottom: 10, fontWeight: "bold" }}>Create Main Branch with:</p>
 
       {isMedical ? (
         <div style={{ display: "flex", flexDirection: "row", gap: 10 }}> 
@@ -93,7 +93,7 @@ const Preprocessor = ({ file, detectedDomain, autoStart = false, setLoading }) =
               flex: 1,
             }}
           >
-            Domain
+            Domain Based Preprocessing
           </button>
           <button
             onClick={() => handlePreprocess("normal")}
@@ -107,7 +107,7 @@ const Preprocessor = ({ file, detectedDomain, autoStart = false, setLoading }) =
               flex: 1,
             }}
           >
-            Normal
+            Normal Preprocessing
           </button>
         </div>
       ) : (
