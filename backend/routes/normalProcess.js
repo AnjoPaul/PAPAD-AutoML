@@ -8,7 +8,6 @@ const { upload } = require("../middleware/upload");
 
 const rootDir = path.join(__dirname, "..");
 
-// --- 1. HELPER: Load JSON ---
 const loadJsonSafe = (filePath) => {
   try {
     const fullPath = path.join(rootDir, filePath);
@@ -19,16 +18,12 @@ const loadJsonSafe = (filePath) => {
   }
 };
 
-// --- 2. HELPER: Generate Graph Data (Restored) ---
-// This builds the node/edge structure so the frontend knows what to render
-// for default runs or processed branches.
 const generateGraphData = (pList, mList, oList) => {
   const nodes = [];
   const edges = [];
   let lastNodeId = "dataset-node";
-  let xPos = 50; // Start X position
+  let xPos = 50; 
   
-  // 1. Dataset Node
   nodes.push({
     id: "dataset-node",
     type: "datasetNode",
@@ -41,52 +36,31 @@ const generateGraphData = (pList, mList, oList) => {
   const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
   const allOutputs = loadJsonSafe("output_section/output_options.json");
 
-  // 2. Preprocessing Nodes
   pList.forEach((id) => {
     const module = allPreproc.find(m => m.id === id);
     if (!module) return;
-    
     const newNodeId = `p_${id}_${Date.now()}`;
-    nodes.push({
-      id: newNodeId,
-      type: "preprocessingNode",
-      position: { x: xPos, y: 100 },
-      data: { label: module.label, baseId: id }
-    });
+    nodes.push({ id: newNodeId, type: "preprocessingNode", position: { x: xPos, y: 100 }, data: { label: module.label, baseId: id } });
     edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
     lastNodeId = newNodeId;
     xPos += 250;
   });
 
-  // 3. Model Nodes
   mList.forEach((id) => {
     const module = allModels.find(m => m.id === id);
     if (!module) return;
-
     const newNodeId = `m_${id}_${Date.now()}`;
-    nodes.push({
-      id: newNodeId,
-      type: "modelNode",
-      position: { x: xPos, y: 100 },
-      data: { label: module.label, baseId: id }
-    });
+    nodes.push({ id: newNodeId, type: "modelNode", position: { x: xPos, y: 100 }, data: { label: module.label, baseId: id } });
     edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
     lastNodeId = newNodeId;
     xPos += 250;
   });
 
-  // 4. Output Nodes
   oList.forEach((id) => {
     const module = allOutputs.find(m => m.id === id);
     if (!module) return;
-
     const newNodeId = `o_${id}_${Date.now()}`;
-    nodes.push({
-      id: newNodeId,
-      type: "outputNode",
-      position: { x: xPos, y: 85 },
-      data: { label: module.label, baseId: id }
-    });
+    nodes.push({ id: newNodeId, type: "outputNode", position: { x: xPos, y: 85 }, data: { label: module.label, baseId: id } });
     edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
     lastNodeId = newNodeId;
     xPos += 250;
@@ -95,8 +69,7 @@ const generateGraphData = (pList, mList, oList) => {
   return { nodes, edges };
 };
 
-// --- 3. HELPER: Promisified Spawn ---
-// Runs python scripts asynchronously
+// --- UPDATED HELPER: Captures Error Detail ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
     const python = spawn("python", [scriptPath, ...args]);
@@ -107,40 +80,29 @@ const runPythonScript = (scriptPath, args) => {
     python.stderr.on("data", (data) => { errorOutput += data.toString(); });
 
     python.on("close", (code) => {
-      if (errorOutput) console.error(`[Py-Err] ${scriptPath}:`, errorOutput);
       if (code === 0) {
         resolve(output);
       } else {
-        reject(new Error(`Script exited with code ${code}: ${errorOutput}`));
+        // REJECT WITH THE SPECIFIC ERROR FROM PYTHON
+        // We trim it to avoid huge logs, but keep the core error message.
+        console.error(`[Py-Err] ${scriptPath} failed:\n${errorOutput}`);
+        reject(new Error(errorOutput || `Script exited with code ${code}`));
       }
     });
   });
 };
 
-/**
- * CORE FUNCTION: Process a Single Branch
- * 1. Preprocess (with logging)
- * 2. Train Model
- * 3. Generate Output
- * 4. Generate Graph JSON
- * Returns: { outputs, trainingResults, graph }
- */
 const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
   console.log(`\n🌿 Processing Branch: ${branchName}`);
-  console.log(`   Nodes -> P:${pList.length} | M:${mList.length} | O:${oList.length}`);
-
-  // Setup Paths
+  
   const logDirName = `${branchName}_logging`;
   const logDirPath = path.join(rootDir, "preprocessing", "Normal_preprocessing", logDirName);
   
-  if (!fs.existsSync(logDirPath)){
-      fs.mkdirSync(logDirPath, { recursive: true });
-  }
-
+  // Clean logic handled inside python script now
+  
   const outputCsvName = `${branchName}_processed.csv`;
   const preprocessedPath = path.join(rootDir, outputCsvName);
 
-  // Prepare Modules
   const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
   const modulesToUse = pList.map(id => allModules.find(m => m.id === id)).filter(Boolean);
 
@@ -152,13 +114,13 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
         datasetPath,
         JSON.stringify(modulesToUse),
         preprocessedPath,
-        logDirPath // Pass log folder to Python
+        logDirPath
       ]
     );
-    console.log(`   ✅ Preprocessing Complete. Logs in: ${logDirName}`);
+    console.log(`   ✅ Preprocessing Complete.`);
   } catch (err) {
-    console.error(`   ❌ Preprocessing Failed for ${branchName}:`, err.message);
-    throw err;
+    // --- THROW SPECIFIC ERROR ---
+    throw new Error(`Preprocessing Failed: ${err.message.split('\n').pop()}`); 
   }
 
   // B. RUN MODEL TRAINING
@@ -188,7 +150,9 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
         console.log(`   ✅ Model Training Complete.`);
       }
     } catch (err) {
-      console.error(`   ❌ Model Training Failed for ${branchName}:`, err.message);
+      // --- THROW SPECIFIC ERROR ---
+      // This catches the "string to float" error
+      throw new Error(`Model Training Failed: ${err.message.split('\n').slice(-2).join(' ')}`);
     }
   }
 
@@ -209,21 +173,19 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
       }
       console.log(`   ✅ Output Generation Complete.`);
     } catch (err) {
-       console.error(`   ❌ Output Generation Failed for ${branchName}:`, err.message);
+       throw new Error(`Output Generation Failed: ${err.message}`);
     }
   }
 
-  // D. GENERATE GRAPH DATA (FIX ADDED HERE)
   const graphData = generateGraphData(pList, mList, oList);
 
   return {
     outputs: visualizationData,
     trainingResults: trainingResults,
-    graph: graphData // <--- Returns the graph structure for frontend rendering
+    graph: graphData
   };
 };
 
-// --- ROUTE: Main Branch / Single Run (/preprocess-normal) ---
 router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Dataset file missing" });
 
@@ -232,25 +194,16 @@ router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => 
   let modelIds = req.body.modelIds ? JSON.parse(req.body.modelIds) : [];
   let outputIds = req.body.outputIds ? JSON.parse(req.body.outputIds) : [];
 
-  // Default setup if not custom
   if (!isCustom) {
-     console.log("DEFAULT RUN: Adding default model (m1) and output (o1)");
      modelIds = ['m1'];
      outputIds = ['o1'];
-     // Fetch all modules for pList if empty
      const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
      if (customIds.length === 0) customIds = allModules.map(m => m.id);
   }
 
   try {
-    // Process as "main_branch" or "default"
     const result = await processBranch("main_branch", req.file.path, customIds, modelIds, outputIds);
-    
-    // Response includes result.graph automatically now
-    res.json({
-        message: "Pipeline Completed Successfully",
-        ...result 
-    });
+    res.json({ message: "Pipeline Completed Successfully", ...result });
   } catch (err) {
     res.status(500).json({ message: "Pipeline Processing Failed", error: err.message });
   }

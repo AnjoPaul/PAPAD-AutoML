@@ -1,4 +1,5 @@
 backend/node_modules/
+backend/uploads/
 electron-app/node_modules/
 .env
 backend/.env

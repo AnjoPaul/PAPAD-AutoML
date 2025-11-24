@@ -264,7 +264,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
             </button>
         )}
 
-        <button onClick={handleClearCanvas} style={{ position: "absolute", top: 10, right: 190, zIndex: 10, padding: "8px 16px", background: "#6c757d", color: "white", border: "none", borderRadius: 6, cursor: "pointer", boxShadow: "0 2px 5px rgba(0,0,0,0.2)" }}>Clear Canvas</button>
+        <button onClick={handleClearCanvas} style={{ position: "absolute", top: 10, right: 180, zIndex: 10, padding: "8px 16px", background: "#6c757d", color: "white", border: "none", borderRadius: 6, cursor: "pointer", boxShadow: "0 2px 5px rgba(0,0,0,0.2)" }}>Clear Canvas</button>
 
         <button onClick={handleRunConfig} style={{ position: "absolute", top: 10, right: 10, zIndex: 10, padding: "8px 16px", background: "#e20606ff", color: "white", border: "none", borderRadius: 6, cursor: "pointer", boxShadow: "0 2px 5px rgba(0,0,0,0.2)" }}>Run Configuration</button>
 

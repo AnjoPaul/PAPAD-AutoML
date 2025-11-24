@@ -10,24 +10,15 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
       return;
     }
 
-    // 1. Run Validation
     if (onValidate) {
       const validationError = onValidate();
-      if (validationError) {
-        return setError(validationError); 
-      }
+      if (validationError) return setError(validationError); 
     }
 
-    // DON'T clear results here. We want to keep 'main' if it exists.
     setError(null); 
     
-    // 2. Extract Chains
     const allChains = extractChains(nodes, edges);
-
-    // 3. FILTERING: Separate 'main' from custom branches
     const { main, ...customBranches } = allChains;
-
-    console.log("🚀 [RunConfig] Sending Custom Branches:", customBranches);
 
     if (Object.keys(customBranches).length === 0) {
         setError("No custom branches found! Please create a new branch before running configuration.");
@@ -44,23 +35,31 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
       const res = await axios.post("http://localhost:5000/run-config", formData);
 
       if (res.status === 200) {
-        const { outputs } = res.data; // 'outputs' contains { branch_1: {...}, branch_2: {...} }
+        const { outputs, errors } = res.data;
         
-        if (outputs) {
-          // --- FIX: MERGE WITH EXISTING MAIN BRANCH ---
+        // 1. Handle Successes
+        if (outputs && Object.keys(outputs).length > 0) {
           setResults((prevResults) => ({
-            ...prevResults, // Keep 'main'
-            ...outputs      // Add 'branch_1', 'branch_2', etc.
+            ...prevResults,
+            ...outputs
           }));
-          
-          console.log("✅ Pipeline Finished! Results merged.");
-        } else {
-          setError("Pipeline finished, but no visualization data was returned.");
+        }
+
+        // 2. Handle Errors (Display Message)
+        if (errors && Object.keys(errors).length > 0) {
+            const errorList = Object.entries(errors)
+                .map(([branch, msg]) => `• ${branch.replace('_', ' ')}: ${msg}`)
+                .join('\n');
+            
+            // Set error but KEEP results if some succeeded
+            setError(`⚠️ Some branches failed to process:\n${errorList}`);
+        } else if (!outputs || Object.keys(outputs).length === 0) {
+             setError("Pipeline finished, but no valid results were returned.");
         }
       }
     } catch (err) {
       console.error("❌ [RunConfig] Error sending config:", err);
-      setError("Something went wrong while sending the configuration.");
+      setError("Critical Error: Unable to process configuration.");
     } finally {
       setLoading(false); 
     }

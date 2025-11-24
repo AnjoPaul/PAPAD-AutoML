@@ -3,11 +3,8 @@ const cors = require("cors");
 const path = require("path");
 const { spawn } = require("child_process");
 
-// 1. Import Middleware and Routes
 const { upload, uploadDir } = require("./middleware/upload");
 const resourceRoutes = require("./routes/resources");
-
-// --- FIX: Import processBranch here ---
 const { router: normalProcessRoutes, handlePreprocessing, processBranch } = require("./routes/normalProcess");
 
 const app = express();
@@ -16,9 +13,8 @@ const PORT = 5000;
 app.use(cors());
 app.use(express.json());
 
-// 2. Use the New Routes
-app.use(resourceRoutes);       // Adds /model-list, /output-options, etc.
-app.use(normalProcessRoutes);  // Adds /preprocess-normal
+app.use(resourceRoutes);
+app.use(normalProcessRoutes);
 
 /* ---------------- Remaining Logic (Domain & Medical) ---------------- */
 
@@ -100,7 +96,6 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
         return res.status(400).json({ message: "Dataset file is required" });
     }
 
-    // 1. Parse Chains: { "branch_1": [...nodes], "branch_2": [...nodes] }
     let chainsRaw = req.body.chains;
     if (typeof chainsRaw === "string") {
         chainsRaw = JSON.parse(chainsRaw);
@@ -108,42 +103,49 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
 
     console.log("🚀 [RunConfig] Received Branches:", Object.keys(chainsRaw));
 
-    // 2. Prepare Promises for Parallel Execution
+    // Prepare Promises
     const branchPromises = Object.entries(chainsRaw).map(async ([branchName, nodes]) => {
-        
         console.log(`\n🌿 [Branch: ${branchName}] Processing ${nodes.length} nodes...`);
 
-        // Segregate IDs for this specific branch
         const pList = [];
         const mList = [];
         const oList = [];
 
         nodes.forEach((step) => {
             const baseId = step.baseId || "";
-            if (baseId.startsWith('n') || baseId.startsWith('p')) pList.push(baseId); // p or np
+            if (baseId.startsWith('n') || baseId.startsWith('p')) pList.push(baseId);
             else if (baseId.startsWith('m')) mList.push(baseId);
             else if (baseId.startsWith('o')) oList.push(baseId);
         });
 
-        // Use the imported processBranch function
-        const result = await processBranch(branchName, req.file.path, pList, mList, oList);
-
-        return {
-            branchName,
-            data: result
-        };
+        try {
+            const result = await processBranch(branchName, req.file.path, pList, mList, oList);
+            return { branchName, status: 'success', data: result };
+        } catch (error) {
+            console.error(`❌ [${branchName} FAILED] ${error.message}`);
+            return { branchName, status: 'error', error: error.message };
+        }
     });
 
-    // 3. Wait for ALL branches to finish
     const resultsArray = await Promise.all(branchPromises);
 
-    // 4. Transform Array back to Object: { "branch_1": { outputs, trainingResults }, ... }
     const finalResults = {};
+
     resultsArray.forEach(item => {
-        finalResults[item.branchName] = item.data;
+        if (item.status === 'success') {
+            finalResults[item.branchName] = item.data;
+        } else {
+            // --- FIX: Add failed branch to finalResults with Error Info ---
+            finalResults[item.branchName] = {
+                status: 'failed',
+                error: item.error, // Pass the specific error message
+                trainingResults: [], // Empty so it doesn't break UI
+                outputs: {}
+            };
+        }
     });
 
-    // 5. Send aggregated response
+    // Send everything in 'outputs' so the frontend ResultsPanel can render it
     res.json({
         message: "Multi-Branch Pipeline Completed",
         outputs: finalResults, 

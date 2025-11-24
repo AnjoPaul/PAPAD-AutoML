@@ -5,7 +5,7 @@ import importlib
 import pandas as pd
 import chardet
 import csv
-import shutil  # <--- IMPORT SHUTIL FOR FOLDER DELETION
+import shutil
 
 # ------------------------------
 # Add project root to sys.path
@@ -14,6 +14,9 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 # ------------------------------
+
+# FORCE UTF-8 OUTPUT (Prevents other encoding errors on Windows)
+sys.stdout.reconfigure(encoding='utf-8')
 
 dataset_path = sys.argv[1]
 modules_json = sys.argv[2]
@@ -32,16 +35,12 @@ modules = json.loads(modules_json)
 
 # --- CLEAN AND CREATE LOG DIRECTORY ---
 if log_dir:
-    # 1. Check if it exists
     if os.path.exists(log_dir):
         print(f"Cleaning existing log directory: {log_dir}")
         try:
-            # 2. Delete the folder and all its contents
             shutil.rmtree(log_dir)
         except Exception as e:
             print(f"Warning: Could not delete old logs at {log_dir}. Error: {e}")
-
-    # 3. Create a fresh, empty directory
     os.makedirs(log_dir, exist_ok=True)
     print(f"Logging intermediate steps to: {log_dir}")
 # --------------------------------------
@@ -77,35 +76,28 @@ for i, module in enumerate(modules, 1):
     module_label = id_to_label.get(module_id)
 
     if not module_label:
-        print("Module ID not found:", module_id)
+        print(f"Warning: Module ID {module_id} not found in map.")
         continue
 
     python_file = label_to_python_filename(module_label)
     print(f"Running {module_label} (id={module_id})...")
 
-    try:
-        mod = importlib.import_module(
-            f"preprocessing.Normal_preprocessing.components.{python_file}"
-        )
+    # Import and Run Module
+    mod = importlib.import_module(
+        f"preprocessing.Normal_preprocessing.components.{python_file}"
+    )
 
-        df = mod.apply(df)
+    df = mod.apply(df)
 
-        # --- LOGGING STEP ---
-        if log_dir:
-            # Clean filename: "Remove Duplicates" -> "remove_duplicates"
-            clean_name = module_label.replace(" ", "_").lower()
-            
-            # Add Sequence Number: "1_remove_duplicates.csv"
-            safe_name = f"{i}_{clean_name}.csv"
-            
-            log_path = os.path.join(log_dir, safe_name)
-            df.to_csv(log_path, index=False)
-            print(f"   └── Saved log: {safe_name}")
-        # --------------------
-
-    except Exception as e:
-        print("ERROR in", module_label, ":", str(e))
-        continue
+    # --- LOGGING STEP ---
+    if log_dir:
+        clean_name = module_label.replace(" ", "_").lower()
+        safe_name = f"{i}_{clean_name}.csv"
+        log_path = os.path.join(log_dir, safe_name)
+        df.to_csv(log_path, index=False)
+        
+        # FIX: Replaced special characters '└──' with safe '-->'
+        print(f"   --> Saved log: {safe_name}")
 
 df.to_csv(output_path, index=False)
 print("Preprocessing done. Saved:", output_path)
