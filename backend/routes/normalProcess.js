@@ -8,25 +8,27 @@ const { upload } = require("../middleware/upload");
 
 const rootDir = path.join(__dirname, "..");
 
-// --- HELPER FUNCTION TO READ JSON FILES ---
+// --- 1. HELPER: Load JSON ---
 const loadJsonSafe = (filePath) => {
   try {
     const fullPath = path.join(rootDir, filePath);
     const raw = fs.readFileSync(fullPath, "utf8");
     return JSON.parse(raw);
   } catch (err) {
-    console.error(`Error loading JSON from ${filePath}:`, err);
     return [];
   }
 };
 
-// --- NEW HELPER: BUILDS GRAPH FOR FRONTEND ---
+// --- 2. HELPER: Generate Graph Data (Restored) ---
+// This builds the node/edge structure so the frontend knows what to render
+// for default runs or processed branches.
 const generateGraphData = (pList, mList, oList) => {
   const nodes = [];
   const edges = [];
   let lastNodeId = "dataset-node";
-  let xPos = 50;
+  let xPos = 50; // Start X position
   
+  // 1. Dataset Node
   nodes.push({
     id: "dataset-node",
     type: "datasetNode",
@@ -39,8 +41,9 @@ const generateGraphData = (pList, mList, oList) => {
   const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
   const allOutputs = loadJsonSafe("output_section/output_options.json");
 
+  // 2. Preprocessing Nodes
   pList.forEach((id) => {
-    const module = allPreproc.find(m => m.id === id); // Find by ID
+    const module = allPreproc.find(m => m.id === id);
     if (!module) return;
     
     const newNodeId = `p_${id}_${Date.now()}`;
@@ -55,8 +58,9 @@ const generateGraphData = (pList, mList, oList) => {
     xPos += 250;
   });
 
+  // 3. Model Nodes
   mList.forEach((id) => {
-    const module = allModels.find(m => m.id === id); // Find by ID
+    const module = allModels.find(m => m.id === id);
     if (!module) return;
 
     const newNodeId = `m_${id}_${Date.now()}`;
@@ -71,8 +75,9 @@ const generateGraphData = (pList, mList, oList) => {
     xPos += 250;
   });
 
+  // 4. Output Nodes
   oList.forEach((id) => {
-    const module = allOutputs.find(m => m.id === id); // Find by ID
+    const module = allOutputs.find(m => m.id === id);
     if (!module) return;
 
     const newNodeId = `o_${id}_${Date.now()}`;
@@ -90,215 +95,165 @@ const generateGraphData = (pList, mList, oList) => {
   return { nodes, edges };
 };
 
+// --- 3. HELPER: Promisified Spawn ---
+// Runs python scripts asynchronously
+const runPythonScript = (scriptPath, args) => {
+  return new Promise((resolve, reject) => {
+    const python = spawn("python", [scriptPath, ...args]);
+    let output = "";
+    let errorOutput = "";
 
-/**
- * 3. UPDATED: Function to Run Output Generation
- */
-const handleOutputGeneration = (
-  preprocessedFilePath,
-  modelPath,
-  outputIds,
-  trainingResults,
-  customIds, // pList
-  modelIds,  // mList
-  res
-) => {
-  console.log("📊 [Output Handler] Generating outputs for:", outputIds);
+    python.stdout.on("data", (data) => { output += data.toString(); });
+    python.stderr.on("data", (data) => { errorOutput += data.toString(); });
 
-  if (!outputIds || outputIds.length === 0) {
-    const graph = generateGraphData(customIds, modelIds, outputIds);
-    return res.json({
-      message: "Process completed (No outputs requested)",
-      trainingResults: trainingResults,
-      graph: graph,
-      outputs: {}
-    });
-  }
-
-  const python = spawn("python", [
-    "output_section/output_handler.py",
-    preprocessedFilePath,
-    modelPath,
-    JSON.stringify(outputIds)
-  ]);
-
-  let scriptOutput = "";
-  python.stdout.on("data", (data) => scriptOutput += data.toString());
-  python.stderr.on("data", (data) => console.error("Output ERR:", data.toString()));
-
-  python.on("close", (code) => {
-    console.log(`🔚 Output Python exited with code ${code}`);
-    let visualizationData = {};
-    try {
-      const jsonStart = scriptOutput.indexOf("__JSON_START__");
-      const jsonEnd = scriptOutput.indexOf("__JSON_END__");
-      if (jsonStart !== -1 && jsonEnd !== -1) {
-        const jsonStr = scriptOutput.substring(jsonStart + 14, jsonEnd);
-        visualizationData = JSON.parse(jsonStr);
+    python.on("close", (code) => {
+      if (errorOutput) console.error(`[Py-Err] ${scriptPath}:`, errorOutput);
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`Script exited with code ${code}: ${errorOutput}`));
       }
-    } catch (e) {
-      console.error("Error parsing output JSON:", e);
-    }
-
-    const graph = generateGraphData(customIds, modelIds, outputIds);
-
-    // FINAL RESPONSE TO UI
-    res.json({
-      message: "Pipeline Completed Successfully",
-      trainingResults: trainingResults,
-      outputs: visualizationData,
-      graph: graph 
     });
   });
 };
 
 /**
- * 2. UPDATED: Model Training Handler
+ * CORE FUNCTION: Process a Single Branch
+ * 1. Preprocess (with logging)
+ * 2. Train Model
+ * 3. Generate Output
+ * 4. Generate Graph JSON
+ * Returns: { outputs, trainingResults, graph }
  */
-const handleModelTraining = (
-  preprocessedFilePath,
-  modelIds,
-  outputIds,
-  customIds, // pList
-  res
-) => {
-  console.log("🧠 [Model Handler] Starting training for:", modelIds);
+const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
+  console.log(`\n🌿 Processing Branch: ${branchName}`);
+  console.log(`   Nodes -> P:${pList.length} | M:${mList.length} | O:${oList.length}`);
 
-  const modelNamesPath = path.join(rootDir, "model_selectionAndTraining", "model_names.json");
-  let selectedModels = [];
-
-  try {
-    const raw = fs.readFileSync(modelNamesPath, "utf8");
-    const allModels = JSON.parse(raw);
-    selectedModels = allModels.filter(m => modelIds.includes(m.id) || modelIds.includes(m.baseId));
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to load model definitions" });
-  }
+  // Setup Paths
+  const logDirName = `${branchName}_logging`;
+  const logDirPath = path.join(rootDir, "preprocessing", "Normal_preprocessing", logDirName);
   
-  if (selectedModels.length === 0) {
-    const graph = generateGraphData(customIds, modelIds, outputIds);
-    return res.json({ 
-      message: "Preprocessing done. No model trained.",
-      graph: graph,
-      outputs: {}
-    });
+  if (!fs.existsSync(logDirPath)){
+      fs.mkdirSync(logDirPath, { recursive: true });
   }
 
-  const python = spawn("python", [
-    "model_selectionAndTraining/model_handler.py",
-    preprocessedFilePath,
-    JSON.stringify(selectedModels)
-  ]);
+  const outputCsvName = `${branchName}_processed.csv`;
+  const preprocessedPath = path.join(rootDir, outputCsvName);
 
-  let scriptOutput = "";
-  python.stdout.on("data", (data) => scriptOutput += data.toString());
-  python.stderr.on("data", (data) => console.error("Model ERR:", data.toString()));
+  // Prepare Modules
+  const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
+  const modulesToUse = pList.map(id => allModules.find(m => m.id === id)).filter(Boolean);
 
-  python.on("close", (code) => {
-    let trainingResults = [];
+  // A. RUN PREPROCESSING
+  try {
+    await runPythonScript(
+      "preprocessing/Normal_preprocessing/normal_preprocessing_handler.py",
+      [
+        datasetPath,
+        JSON.stringify(modulesToUse),
+        preprocessedPath,
+        logDirPath // Pass log folder to Python
+      ]
+    );
+    console.log(`   ✅ Preprocessing Complete. Logs in: ${logDirName}`);
+  } catch (err) {
+    console.error(`   ❌ Preprocessing Failed for ${branchName}:`, err.message);
+    throw err;
+  }
+
+  // B. RUN MODEL TRAINING
+  let trainingResults = [];
+  let trainedModelPath = null;
+
+  if (mList.length > 0) {
     try {
-        const jsonStart = scriptOutput.indexOf("__JSON_START__");
-        const jsonEnd = scriptOutput.indexOf("__JSON_END__");
-        if (jsonStart !== -1 && jsonEnd !== -1) {
-            const jsonStr = scriptOutput.substring(jsonStart + 14, jsonEnd);
-            trainingResults = JSON.parse(jsonStr);
-        }
-    } catch (e) {
-      console.error("Error parsing training results:", e);
-    }
-
-    if (trainingResults.length > 0) {
-      const trainedModelPath = trainingResults[0].path; 
+      const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
+      const selectedModels = allModels.filter(m => mList.includes(m.id) || mList.includes(m.baseId));
       
-      handleOutputGeneration(
-        preprocessedFilePath,
-        trainedModelPath,
-        outputIds,
-        trainingResults,
-        customIds, // Pass pList
-        modelIds,  // Pass mList
-        res
-      );
-    } else {
-      res.status(500).json({ message: "Training failed, no results returned." });
+      if (selectedModels.length > 0) {
+        const output = await runPythonScript(
+          "model_selectionAndTraining/model_handler.py",
+          [preprocessedPath, JSON.stringify(selectedModels)]
+        );
+
+        const jsonStart = output.indexOf("__JSON_START__");
+        const jsonEnd = output.indexOf("__JSON_END__");
+        if (jsonStart !== -1 && jsonEnd !== -1) {
+            const jsonStr = output.substring(jsonStart + 14, jsonEnd);
+            trainingResults = JSON.parse(jsonStr);
+            if (trainingResults.length > 0) {
+                trainedModelPath = trainingResults[0].path;
+            }
+        }
+        console.log(`   ✅ Model Training Complete.`);
+      }
+    } catch (err) {
+      console.error(`   ❌ Model Training Failed for ${branchName}:`, err.message);
     }
-  });
-};
-
-
-/**
- * 1. UPDATED: Preprocessing Handler
- */
-const handlePreprocessing = (filePath, isCustom, customIds, modelIds, outputIds, res) => {
-  let modulesToUse = [];
-  const moduleFilePath = path.join(rootDir, "preprocessing","Normal_preprocessing", "normal_preprocessing_modules.json");
-
-  try {
-    const raw = fs.readFileSync(moduleFilePath, "utf8");
-    const allModules = JSON.parse(raw);
-
-    if (!isCustom) {
-      modulesToUse = allModules;
-      // --- Populating customIds (pList) with ALL module IDs ---
-      customIds = allModules.map(m => m.id);
-      console.log("Not custom. Populating customIds with all modules:", customIds);
-    } else {
-      // Find modules based on the pList from the frontend
-      modulesToUse = customIds.map(id => {
-        return allModules.find(m => m.id === id); 
-      }).filter(m => m !== undefined);
-    }
-  } catch (err) {
-    return res.status(500).json({ error: "Could not load preprocessing modules" });
   }
 
-  const outputPath = path.join(rootDir, "normal_preprocessed_dataset.csv");
-
-  const python = spawn("python", [
-    "preprocessing/Normal_preprocessing/normal_preprocessing_handler.py",
-    filePath,
-    JSON.stringify(modulesToUse),
-    outputPath,
-  ]);
-
-  python.stdout.on("data", (data) => console.log("Preproc STDOUT:", data.toString()));
-  python.stderr.on("data", (data) => console.error("Preproc ERR:", data.toString()));
-
-  python.on("close", (code) => {
-    if (code === 0) {
-      handleModelTraining(
-        outputPath,
-        modelIds,
-        outputIds,
-        customIds, // Pass the populated pList
-        res
+  // C. RUN OUTPUT GENERATION
+  let visualizationData = {};
+  if (oList.length > 0 && trainedModelPath) {
+    try {
+      const output = await runPythonScript(
+        "output_section/output_handler.py",
+        [preprocessedPath, trainedModelPath, JSON.stringify(oList)]
       );
-    } else {
-      res.status(500).json({ message: "Preprocessing failed." });
+
+      const jsonStart = output.indexOf("__JSON_START__");
+      const jsonEnd = output.indexOf("__JSON_END__");
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+          const jsonStr = output.substring(jsonStart + 14, jsonEnd);
+          visualizationData = JSON.parse(jsonStr);
+      }
+      console.log(`   ✅ Output Generation Complete.`);
+    } catch (err) {
+       console.error(`   ❌ Output Generation Failed for ${branchName}:`, err.message);
     }
-  });
+  }
+
+  // D. GENERATE GRAPH DATA (FIX ADDED HERE)
+  const graphData = generateGraphData(pList, mList, oList);
+
+  return {
+    outputs: visualizationData,
+    trainingResults: trainingResults,
+    graph: graphData // <--- Returns the graph structure for frontend rendering
+  };
 };
 
-// --- THIS IS THE ROUTE WITH THE FIX ---
-router.post("/preprocess-normal", upload.single("dataset"), (req, res) => {
+// --- ROUTE: Main Branch / Single Run (/preprocess-normal) ---
+router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Dataset file missing" });
-  
+
   const isCustom = req.body.isCustom === "true";
-  
-  // Get lists from body (will be empty if not provided)
   let customIds = req.body.ids ? JSON.parse(req.body.ids) : [];
   let modelIds = req.body.modelIds ? JSON.parse(req.body.modelIds) : [];
   let outputIds = req.body.outputIds ? JSON.parse(req.body.outputIds) : [];
 
-  // --- FIX: Add default model and output if NOT custom ---
-  if (isCustom === false) {
-    console.log("DEFAULT RUN: Adding default model (m1) and output (o1)");
-    modelIds = ['m1'];
-    outputIds = ['o1'];
-    // customIds will be populated by handlePreprocessing
+  // Default setup if not custom
+  if (!isCustom) {
+     console.log("DEFAULT RUN: Adding default model (m1) and output (o1)");
+     modelIds = ['m1'];
+     outputIds = ['o1'];
+     // Fetch all modules for pList if empty
+     const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
+     if (customIds.length === 0) customIds = allModules.map(m => m.id);
   }
 
-  handlePreprocessing(req.file.path, isCustom, customIds, modelIds, outputIds, res);
+  try {
+    // Process as "main_branch" or "default"
+    const result = await processBranch("main_branch", req.file.path, customIds, modelIds, outputIds);
+    
+    // Response includes result.graph automatically now
+    res.json({
+        message: "Pipeline Completed Successfully",
+        ...result 
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Pipeline Processing Failed", error: err.message });
+  }
 });
 
-module.exports = { router, handlePreprocessing };
+module.exports = { router, processBranch };

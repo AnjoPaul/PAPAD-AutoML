@@ -18,20 +18,17 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
       }
     }
 
-    setResults(null); 
+    // DON'T clear results here. We want to keep 'main' if it exists.
     setError(null); 
     
     // 2. Extract Chains
     const allChains = extractChains(nodes, edges);
 
     // 3. FILTERING: Separate 'main' from custom branches
-    // We destructure 'main' out, and keep the rest in 'customBranches'
     const { main, ...customBranches } = allChains;
 
-    console.log("🚀 [RunConfig] Main Branch (Excluded):", main);
     console.log("🚀 [RunConfig] Sending Custom Branches:", customBranches);
 
-    // Check if user actually created a custom branch
     if (Object.keys(customBranches).length === 0) {
         setError("No custom branches found! Please create a new branch before running configuration.");
         return;
@@ -39,7 +36,6 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
 
     const formData = new FormData();
     formData.append("dataset", localFile); 
-    // Only send the custom branches
     formData.append("chains", JSON.stringify(customBranches));
 
     try {
@@ -47,16 +43,17 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
       
       const res = await axios.post("http://localhost:5000/run-config", formData);
 
-      console.log("📦 [RunConfig] Backend raw response:", res);
-
       if (res.status === 200) {
-        const { outputs, trainingResults, graph } = res.data;
+        const { outputs } = res.data; // 'outputs' contains { branch_1: {...}, branch_2: {...} }
         
         if (outputs) {
-          // Merge new results with existing main results if needed, 
-          // or just set the new results.
-          setResults({ outputs, trainingResults });
-          console.log("✅ Pipeline Finished!");
+          // --- FIX: MERGE WITH EXISTING MAIN BRANCH ---
+          setResults((prevResults) => ({
+            ...prevResults, // Keep 'main'
+            ...outputs      // Add 'branch_1', 'branch_2', etc.
+          }));
+          
+          console.log("✅ Pipeline Finished! Results merged.");
         } else {
           setError("Pipeline finished, but no visualization data was returned.");
         }

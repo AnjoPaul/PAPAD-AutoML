@@ -3,9 +3,12 @@ import os
 import json
 import importlib
 import pandas as pd
+import chardet
+import csv
+import shutil  # <--- IMPORT SHUTIL FOR FOLDER DELETION
 
 # ------------------------------
-# FIX: Add project root to sys.path
+# Add project root to sys.path
 # ------------------------------
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT_DIR not in sys.path:
@@ -15,8 +18,9 @@ if ROOT_DIR not in sys.path:
 dataset_path = sys.argv[1]
 modules_json = sys.argv[2]
 output_path = sys.argv[3]
+log_dir = sys.argv[4] if len(sys.argv) > 4 else None
 
-# Load mapping file (one folder above)
+# Load mapping file
 json_path = os.path.join(os.path.dirname(__file__), "normal_preprocessing_modules.json")
 
 with open(json_path, "r", encoding="utf-8") as f:
@@ -25,15 +29,28 @@ with open(json_path, "r", encoding="utf-8") as f:
 id_to_label = {m["id"]: m["name"] for m in module_map}
 
 modules = json.loads(modules_json)
-print("Modules received:", modules)
+
+# --- CLEAN AND CREATE LOG DIRECTORY ---
+if log_dir:
+    # 1. Check if it exists
+    if os.path.exists(log_dir):
+        print(f"Cleaning existing log directory: {log_dir}")
+        try:
+            # 2. Delete the folder and all its contents
+            shutil.rmtree(log_dir)
+        except Exception as e:
+            print(f"Warning: Could not delete old logs at {log_dir}. Error: {e}")
+
+    # 3. Create a fresh, empty directory
+    os.makedirs(log_dir, exist_ok=True)
+    print(f"Logging intermediate steps to: {log_dir}")
+# --------------------------------------
 
 # Load dataset safely
-import chardet, csv
-
 def load_dataset(path):
     with open(path, "rb") as f:
         enc = chardet.detect(f.read())["encoding"]
-
+    
     with open(path, "r", encoding=enc, errors="replace") as f:
         sample = f.read(2048)
         try:
@@ -54,7 +71,8 @@ df = load_dataset(dataset_path)
 def label_to_python_filename(label):
     return label.lower().replace(" ", "_").replace("-", "_")
 
-for module in modules:
+# Process modules
+for i, module in enumerate(modules, 1):
     module_id = module["id"]
     module_label = id_to_label.get(module_id)
 
@@ -63,8 +81,7 @@ for module in modules:
         continue
 
     python_file = label_to_python_filename(module_label)
-
-    print(f"Running {module_label} (id={module_id}) -> File: {python_file}.py")
+    print(f"Running {module_label} (id={module_id})...")
 
     try:
         mod = importlib.import_module(
@@ -73,7 +90,18 @@ for module in modules:
 
         df = mod.apply(df)
 
-        print("Finished:", module_label)
+        # --- LOGGING STEP ---
+        if log_dir:
+            # Clean filename: "Remove Duplicates" -> "remove_duplicates"
+            clean_name = module_label.replace(" ", "_").lower()
+            
+            # Add Sequence Number: "1_remove_duplicates.csv"
+            safe_name = f"{i}_{clean_name}.csv"
+            
+            log_path = os.path.join(log_dir, safe_name)
+            df.to_csv(log_path, index=False)
+            print(f"   └── Saved log: {safe_name}")
+        # --------------------
 
     except Exception as e:
         print("ERROR in", module_label, ":", str(e))
