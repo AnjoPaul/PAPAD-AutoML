@@ -1,4 +1,5 @@
 [
+  { "id": "m0", "label": "Best Cluster Algo", "name": "best_cluster_algo", "type": "model" },
   { "id": "m1", "label": "K-Means", "name": "kmeans", "type": "model" },
   { "id": "m2", "label": "MiniBatch K-Means", "name": "minibatch_kmeans", "type": "model" },
   { "id": "m3", "label": "K-Medoids (PAM)", "name": "k_medoids", "type": "model" },

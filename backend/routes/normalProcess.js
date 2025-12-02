@@ -1,4 +1,3 @@
-// routes/normalProcess.js
 const express = require("express");
 const router = express.Router();
 const path = require("path");
@@ -69,23 +68,56 @@ const generateGraphData = (pList, mList, oList) => {
   return { nodes, edges };
 };
 
-// --- UPDATED HELPER: Captures Error Detail ---
+// --- UPDATED PYTHON RUNNER (Hides JSON Blob) ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    const python = spawn("python", [scriptPath, ...args]);
+    const python = spawn("python", ["-u", scriptPath, ...args]);
     let output = "";
     let errorOutput = "";
+    
+    // Flag to track if we are currently inside the JSON data block
+    let isPrintingJson = false;
 
-    python.stdout.on("data", (data) => { output += data.toString(); });
+    python.stdout.on("data", (data) => { 
+        const str = data.toString();
+        output += str; // Always capture full output for logic
+        
+        // --- SMART LOGGING ---
+        // 1. Detect Start of JSON
+        if (str.includes("__JSON_START__")) {
+            isPrintingJson = true;
+            const preJson = str.split("__JSON_START__")[0];
+            if (preJson.trim()) process.stdout.write(preJson);
+        } 
+        // 2. Detect End of JSON
+        else if (str.includes("__JSON_END__")) {
+            isPrintingJson = false;
+            const postJson = str.split("__JSON_END__")[1];
+            if (postJson && postJson.trim()) process.stdout.write(postJson);
+        } 
+        // 3. Normal Logs (Only print if NOT inside JSON block)
+        else if (!isPrintingJson) {
+            // Check for Winner Line to highlight
+            if (str.includes("====== BEST MODEL FOUND:")) {
+                const lines = str.split('\n');
+                const winnerLine = lines.find(l => l.includes("====== BEST MODEL FOUND:"));
+                if (winnerLine) {
+                    console.log("\x1b[32m%s\x1b[0m", winnerLine); // Green Text
+                }
+            } else {
+                process.stdout.write(str);
+            }
+        }
+    });
+
     python.stderr.on("data", (data) => { errorOutput += data.toString(); });
 
     python.on("close", (code) => {
       if (code === 0) {
         resolve(output);
       } else {
-        // REJECT WITH THE SPECIFIC ERROR FROM PYTHON
-        // We trim it to avoid huge logs, but keep the core error message.
-        console.error(`[Py-Err] ${scriptPath} failed:\n${errorOutput}`);
+        const shortError = errorOutput.split('\n').filter(l => l.trim() !== '').slice(-3).join('\n');
+        console.error(`[Py-Err] ${scriptPath} exited with code ${code}. Details:\n${shortError}`);
         reject(new Error(errorOutput || `Script exited with code ${code}`));
       }
     });
@@ -98,39 +130,33 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
   const logDirName = `${branchName}_logging`;
   const logDirPath = path.join(rootDir, "preprocessing", "Normal_preprocessing", logDirName);
   
-  // Clean logic handled inside python script now
-  
+  if (!fs.existsSync(logDirPath)) fs.mkdirSync(logDirPath, { recursive: true });
+
   const outputCsvName = `${branchName}_processed.csv`;
   const preprocessedPath = path.join(rootDir, outputCsvName);
 
   const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
   const modulesToUse = pList.map(id => allModules.find(m => m.id === id)).filter(Boolean);
 
-  // A. RUN PREPROCESSING
+  // A. PREPROCESSING
   try {
     await runPythonScript(
       "preprocessing/Normal_preprocessing/normal_preprocessing_handler.py",
-      [
-        datasetPath,
-        JSON.stringify(modulesToUse),
-        preprocessedPath,
-        logDirPath
-      ]
+      [datasetPath, JSON.stringify(modulesToUse), preprocessedPath, logDirPath]
     );
     console.log(`   ✅ Preprocessing Complete.`);
   } catch (err) {
-    // --- THROW SPECIFIC ERROR ---
     throw new Error(`Preprocessing Failed: ${err.message.split('\n').pop()}`); 
   }
 
-  // B. RUN MODEL TRAINING
+  // B. MODEL TRAINING
   let trainingResults = [];
   let trainedModelPath = null;
 
   if (mList.length > 0) {
     try {
       const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
-      const selectedModels = allModels.filter(m => mList.includes(m.id) || mList.includes(m.baseId));
+      const selectedModels = allModels.filter(m => mList.includes(m.id));
       
       if (selectedModels.length > 0) {
         const output = await runPythonScript(
@@ -140,41 +166,48 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
 
         const jsonStart = output.indexOf("__JSON_START__");
         const jsonEnd = output.indexOf("__JSON_END__");
+        
         if (jsonStart !== -1 && jsonEnd !== -1) {
             const jsonStr = output.substring(jsonStart + 14, jsonEnd);
-            trainingResults = JSON.parse(jsonStr);
-            if (trainingResults.length > 0) {
-                trainedModelPath = trainingResults[0].path;
+            try {
+                trainingResults = JSON.parse(jsonStr);
+                if (trainingResults.length > 0) {
+                    trainedModelPath = trainingResults[0].path;
+                }
+            } catch (e) {
+                console.error("   ❌ JSON Parse Error:", e.message);
             }
         }
         console.log(`   ✅ Model Training Complete.`);
       }
     } catch (err) {
-      // --- THROW SPECIFIC ERROR ---
-      // This catches the "string to float" error
-      throw new Error(`Model Training Failed: ${err.message.split('\n').slice(-2).join(' ')}`);
+      throw new Error(`Model Training Failed: ${err.message}`);
     }
   }
 
-  // C. RUN OUTPUT GENERATION
+  // C. OUTPUT GENERATION
   let visualizationData = {};
-  if (oList.length > 0 && trainedModelPath) {
-    try {
-      const output = await runPythonScript(
-        "output_section/output_handler.py",
-        [preprocessedPath, trainedModelPath, JSON.stringify(oList)]
-      );
+  if (oList.length > 0) {
+      if (trainedModelPath) {
+        try {
+          const output = await runPythonScript(
+            "output_section/output_handler.py",
+            [preprocessedPath, trainedModelPath, JSON.stringify(oList)]
+          );
 
-      const jsonStart = output.indexOf("__JSON_START__");
-      const jsonEnd = output.indexOf("__JSON_END__");
-      if (jsonStart !== -1 && jsonEnd !== -1) {
-          const jsonStr = output.substring(jsonStart + 14, jsonEnd);
-          visualizationData = JSON.parse(jsonStr);
+          const jsonStart = output.indexOf("__JSON_START__");
+          const jsonEnd = output.indexOf("__JSON_END__");
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+              const jsonStr = output.substring(jsonStart + 14, jsonEnd);
+              visualizationData = JSON.parse(jsonStr);
+          }
+          console.log(`   ✅ Output Generation Complete.`);
+        } catch (err) {
+           console.error(`[Output Error] ${err.message}`);
+        }
+      } else {
+          console.log("   ⚠️ Output generation skipped (No trained model found)");
       }
-      console.log(`   ✅ Output Generation Complete.`);
-    } catch (err) {
-       throw new Error(`Output Generation Failed: ${err.message}`);
-    }
   }
 
   const graphData = generateGraphData(pList, mList, oList);
@@ -195,7 +228,7 @@ router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => 
   let outputIds = req.body.outputIds ? JSON.parse(req.body.outputIds) : [];
 
   if (!isCustom) {
-     modelIds = ['m1'];
+     modelIds = ['m0'];
      outputIds = ['o1'];
      const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
      if (customIds.length === 0) customIds = allModules.map(m => m.id);
