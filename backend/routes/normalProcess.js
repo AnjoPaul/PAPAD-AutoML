@@ -68,7 +68,6 @@ const generateGraphData = (pList, mList, oList) => {
   return { nodes, edges };
 };
 
-// --- UPDATED PYTHON RUNNER (Hides JSON Blob) ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
     const python = spawn("python", ["-u", scriptPath, ...args]);

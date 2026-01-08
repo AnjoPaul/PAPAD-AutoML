@@ -133,7 +133,7 @@ export const ResultsPanel = ({ data, onClose }) => {
               borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' 
             }}
           >
-             ← Back to Table
+             ← Back
           </button>
           <h2 style={{ margin: 0 }}>Analysis: {viewingBranch.replace('_', ' ')}</h2>
         </div>

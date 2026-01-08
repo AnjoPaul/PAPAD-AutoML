@@ -7,3 +7,7 @@ electron-app/.env
 build/
 dist/
 .DS_Store
+backend/model_selectionAndTraining/candidate_models
+backend/model_selectionAndTraining/models
+backend/model_selectionAndTraining/test_dataset.csv
+backend/model_selectionAndTraining/train_dataset.csv

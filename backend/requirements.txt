@@ -14,3 +14,5 @@ openpyxl
 chardet
 imbalanced-learn
 scikit-learn-extra
+dotenv
+huggingface_hub
